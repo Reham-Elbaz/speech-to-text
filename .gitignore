@@ -1,0 +1,20 @@
+# Never commit the virtualenv — Hostinger/CI installs its own from server/requirements.txt
+.venv/
+
+# Sensitive: real customer/financial data (names, phone numbers, bank info, VINs) — never commit
+*.xlsx
+
+# Python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# Recorded audio, manifests, labels — real speaker voice data, kept out of git for size/privacy.
+# The FastAPI server doesn't need any of this at runtime (only models/letter_classifier.joblib,
+# which embeds everything it needs). Needed locally only when retraining.
+data/
+
+# Local test artifacts
+/tmp/

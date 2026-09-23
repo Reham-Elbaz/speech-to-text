@@ -1,0 +1,207 @@
+# Arabic Letter Classifier API — contract
+
+This is the file to hand to the Flutter developer. Flutter calls this service directly (not
+through Laravel). The model itself stays on this service; nothing ML-related needs to run in
+Flutter.
+
+## Authentication
+
+Every `/predict` request needs a static API key in the `X-API-Key` header. This is a shared
+secret baked into the app config, **not** per-user auth — anyone who decompiles the app binary
+can extract it, so treat this as a basic abuse filter, not real security. `/health` needs no key.
+
+```
+X-API-Key: <the key>
+```
+
+Missing or wrong key → `401 { "detail": "Missing or invalid X-API-Key header" }`.
+
+Get the actual key value out of band (not in this doc) — don't commit it anywhere. If the app is
+ever going to be publicly released at scale, this should be upgraded to real per-user token
+validation (e.g. reusing whatever Laravel already issues on login) before then.
+
+## Before you rely on this
+
+Current accuracy is **~6.6%** on a genuinely new speaker's voice (measured by leave-one-speaker-out
+cross-validation; chance level for 28 classes is ~3.6%). That number is returned in every response
+(`speaker_held_out_accuracy`) specifically so it's never silently forgotten in the UI. Design the
+UI around this: show multiple candidates rather than committing to one answer, and expect this
+number to improve as more speakers' recordings are added to training — no client-side change
+needed when it does, just re-poll `/health` or re-deploy.
+
+## Base URL
+
+**Temporary for now** — this runs on the developer's own machine and is exposed via an ngrok
+tunnel for testing, not a permanent deployment. The URL changes every time the tunnel is
+restarted (free ngrok tier) — get the current one from whoever runs it before each testing
+session, don't hardcode it. It'll look like `https://<random-name>.ngrok-free.dev`.
+
+To start it:
+
+```bash
+API_KEY="<the shared secret>" ./scripts/run_dev_server.sh
+```
+
+Tested working end-to-end through the tunnel (both `/health` and `/predict`) from a plain HTTP
+client — no interstitial warning page appeared. If ngrok's free-tier browser-warning page ever
+does show up for some client, add `ngrok-skip-browser-warning: true` as a header to bypass it.
+
+## `GET /health`
+
+Quick connectivity/model-loaded check.
+
+**Response 200**
+```json
+{
+  "status": "ok",
+  "model_kind": "svm",
+  "speaker_held_out_accuracy": 0.0663265306122449
+}
+```
+
+## `POST /predict`
+
+**Headers**: `X-API-Key: <key>` (required — see Authentication above)
+
+**Request**: `multipart/form-data`
+| field | type | required | notes |
+|---|---|---|---|
+| `audio` | file | yes | one recorded clip of a single spoken Arabic letter. Any common format (`.m4a`, `.wav`, `.ogg`, `.aac`) — the server normalizes it with ffmpeg, no client-side conversion needed. |
+| `top` | int | no | how many ranked candidates to return (default 3) |
+
+**Response 200**
+```json
+{
+  "predicted_letter": { "id": "28_faa", "arabic": "ف", "score": 0.643 },
+  "top_candidates": [
+    { "id": "28_faa", "arabic": "ف", "score": 0.643 },
+    { "id": "23_zay",  "arabic": "ز", "score": 0.234 },
+    { "id": "10_qaaf", "arabic": "ق", "score": 0.086 }
+  ],
+  "score_type": "relative_score",
+  "model_kind": "svm",
+  "speaker_held_out_accuracy": 0.0663265306122449
+}
+```
+
+- `id` is an internal identifier, stable across retrains — safe to use as a lookup key.
+  `arabic` is the actual glyph to display.
+- `score_type` is either `"probability"` (calibrated, sums to ~1 meaningfully) or
+  `"relative_score"` (softmax over the model's decision margins — ranks candidates correctly but
+  is **not** a calibrated probability; don't display it as "64% sure", treat it as a ranking
+  signal). Check this field rather than assuming — it depends on which model type is currently
+  deployed.
+- Only the current 28-letter alphabet (see below) can be returned; nothing outside that set.
+
+**Response 400** — bad/undecodable audio
+```json
+{ "detail": "Could not decode audio: ..." }
+```
+
+## Sample request (Flutter/Dart)
+
+Uses the [`http`](https://pub.dev/packages/http) package (`http: ^1.0.0` in `pubspec.yaml`).
+
+```dart
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+
+class LetterPrediction {
+  final String id;
+  final String arabic;
+  final double score;
+  LetterPrediction(this.id, this.arabic, this.score);
+
+  factory LetterPrediction.fromJson(Map<String, dynamic> json) =>
+      LetterPrediction(json['id'], json['arabic'], (json['score'] as num).toDouble());
+}
+
+class PredictResult {
+  final LetterPrediction predictedLetter;
+  final List<LetterPrediction> topCandidates;
+  final String scoreType; // "probability" or "relative_score" — see notes above
+  final double speakerHeldOutAccuracy;
+
+  PredictResult({
+    required this.predictedLetter,
+    required this.topCandidates,
+    required this.scoreType,
+    required this.speakerHeldOutAccuracy,
+  });
+
+  factory PredictResult.fromJson(Map<String, dynamic> json) => PredictResult(
+        predictedLetter: LetterPrediction.fromJson(json['predicted_letter']),
+        topCandidates: (json['top_candidates'] as List)
+            .map((c) => LetterPrediction.fromJson(c))
+            .toList(),
+        scoreType: json['score_type'],
+        speakerHeldOutAccuracy: (json['speaker_held_out_accuracy'] as num).toDouble(),
+      );
+}
+
+/// [audioFilePath] is a local path to the recorded clip (any of .m4a/.wav/.ogg/.aac).
+Future<PredictResult> predictLetter({
+  required String baseUrl,
+  required String apiKey,
+  required String audioFilePath,
+  int top = 3,
+}) async {
+  final uri = Uri.parse('$baseUrl/predict').replace(
+    queryParameters: {'top': top.toString()},
+  );
+  final request = http.MultipartRequest('POST', uri)
+    ..headers['X-API-Key'] = apiKey
+    ..files.add(await http.MultipartFile.fromPath('audio', audioFilePath));
+
+  final streamed = await request.send().timeout(const Duration(seconds: 15));
+  final response = await http.Response.fromStream(streamed);
+
+  if (response.statusCode == 401) {
+    throw Exception('Bad API key');
+  }
+  if (response.statusCode != 200) {
+    throw Exception('Prediction failed (${response.statusCode}): ${response.body}');
+  }
+
+  return PredictResult.fromJson(jsonDecode(response.body));
+}
+```
+
+Usage:
+
+```dart
+final result = await predictLetter(
+  baseUrl: 'https://<current-ngrok-url>', // get the fresh one before each testing session
+  apiKey: '<the shared secret>',          // out of band, never hardcode in source control
+  audioFilePath: recordedFile.path,
+);
+
+print('Predicted: ${result.predictedLetter.arabic} '
+    '(${(result.predictedLetter.score * 100).toStringAsFixed(0)}%)');
+// Given current ~6.6% accuracy, show result.topCandidates rather than committing to one answer.
+```
+
+Notes:
+- `top` is sent as a query parameter here (FastAPI accepts it either as a query param or a form
+  field on this endpoint) — either works, this is just the simpler one to wire up.
+- Wrap the call in retry/timeout handling for real use — the tunnel URL depends on someone's
+  laptop staying on and connected, which is exactly why this is flagged as temporary above.
+- Don't hardcode `baseUrl`/`apiKey` in committed source — load from a build config, `--dart-define`,
+  or similar, especially once this moves off the temporary tunnel.
+
+## Letter set
+
+28 standard Arabic letters. 17 of them are flagged `plate_letter: true` in the underlying
+`data/labels.json` — the ones that actually occur on real license plates, if you need to restrict
+or prioritize UI around plate-reading specifically rather than general letter dictation.
+
+## Deployment notes (for whoever hosts this)
+
+- Needs `ffmpeg` on PATH (audio normalization) and Python deps from `server/requirements.txt`.
+- Set a real `API_KEY` environment variable before deploying anywhere reachable beyond your own
+  machine — without it the service falls back to a hardcoded insecure default and logs a loud
+  warning on startup.
+- CORS is wide open (`allow_origins=["*"]`) — this doesn't matter for Flutter's native traffic
+  (CORS is a browser-only mechanism) but restrict it if a web client is ever added.
+- Serve over HTTPS once this is reachable from the public internet — the API key travels in a
+  plain header and needs TLS to not be sniffable.
