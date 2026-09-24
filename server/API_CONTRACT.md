@@ -22,7 +22,7 @@ validation (e.g. reusing whatever Laravel already issues on login) before then.
 
 ## Before you rely on this
 
-Current accuracy is **~6.5%** on a genuinely new speaker's voice (measured by leave-one-speaker-out
+Current accuracy is **~5.4%** on a genuinely new speaker's voice (measured by leave-one-speaker-out
 cross-validation; chance level for 38 classes is ~2.6%). That number is returned in every response
 (`speaker_held_out_accuracy`) specifically so it's never silently forgotten in the UI. Design the
 UI around this: show multiple candidates rather than committing to one answer, and expect this
@@ -68,7 +68,7 @@ Quick connectivity/model-loaded check.
 {
   "status": "ok",
   "model_kind": "random_forest",
-  "speaker_held_out_accuracy": 0.06521739130434782
+  "speaker_held_out_accuracy": 0.05434782608695652
 }
 ```
 (`model_kind` is picked automatically at training time — whichever of SVM/random-forest/KNN scores
@@ -88,30 +88,30 @@ value.)
 **Response 200** (letter example)
 ```json
 {
-  "predicted_letter": { "id": "28_faa", "arabic": "ف", "score": 0.790, "category": "letter" },
+  "predicted_letter": { "id": "28_faa", "arabic": "ف", "score": 0.730, "category": "letter" },
   "top_candidates": [
-    { "id": "28_faa", "arabic": "ف", "score": 0.790, "category": "letter" },
-    { "id": "10_qaaf", "arabic": "ق", "score": 0.047, "category": "letter" },
-    { "id": "09_ain",  "arabic": "ع", "score": 0.033, "category": "letter" }
+    { "id": "28_faa", "arabic": "ف", "score": 0.730, "category": "letter" },
+    { "id": "23_zay",  "arabic": "ز", "score": 0.050, "category": "letter" },
+    { "id": "10_qaaf", "arabic": "ق", "score": 0.040, "category": "letter" }
   ],
   "score_type": "probability",
   "model_kind": "random_forest",
-  "speaker_held_out_accuracy": 0.06521739130434782
+  "speaker_held_out_accuracy": 0.05434782608695652
 }
 ```
 
 **Response 200** (digit example — same shape, `category` is what tells them apart)
 ```json
 {
-  "predicted_letter": { "id": "5", "arabic": "٥", "score": 0.973, "category": "digit" },
+  "predicted_letter": { "id": "5", "arabic": "٥", "score": 0.880, "category": "digit" },
   "top_candidates": [
-    { "id": "5", "arabic": "٥", "score": 0.973, "category": "digit" },
-    { "id": "6", "arabic": "٦", "score": 0.007, "category": "digit" },
-    { "id": "06_seen", "arabic": "س", "score": 0.003, "category": "letter" }
+    { "id": "5", "arabic": "٥", "score": 0.880, "category": "digit" },
+    { "id": "6", "arabic": "٦", "score": 0.040, "category": "digit" },
+    { "id": "0", "arabic": "٠", "score": 0.010, "category": "digit" }
   ],
   "score_type": "probability",
   "model_kind": "random_forest",
-  "speaker_held_out_accuracy": 0.06521739130434782
+  "speaker_held_out_accuracy": 0.05434782608695652
 }
 ```
 
@@ -214,7 +214,7 @@ final result = await predictLetter(
 
 print('Predicted (${result.predictedLetter.category}): ${result.predictedLetter.arabic} '
     '(${(result.predictedLetter.score * 100).toStringAsFixed(0)}%)');
-// Given current ~6.5% accuracy, show result.topCandidates rather than committing to one answer.
+// Given current ~5.4% accuracy, show result.topCandidates rather than committing to one answer.
 ```
 
 Notes:
