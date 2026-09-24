@@ -22,12 +22,17 @@ validation (e.g. reusing whatever Laravel already issues on login) before then.
 
 ## Before you rely on this
 
-Current accuracy is **~5.1%** on a genuinely new speaker's voice (measured by leave-one-speaker-out
+Current accuracy is **~6.5%** on a genuinely new speaker's voice (measured by leave-one-speaker-out
 cross-validation; chance level for 38 classes is ~2.6%). That number is returned in every response
 (`speaker_held_out_accuracy`) specifically so it's never silently forgotten in the UI. Design the
 UI around this: show multiple candidates rather than committing to one answer, and expect this
 number to improve as more speakers' recordings are added to training — no client-side change
 needed when it does, just re-poll `/health` or re-deploy.
+
+Training now includes audio augmentation (pitch/time/gain/noise perturbation of existing clips),
+which is what moved this from ~5.1% — a real but modest gain. It cannot manufacture new speaker
+voices, so it doesn't touch the main gap; more recorded speakers is still what actually matters
+here.
 
 **Important — this only classifies a single, complete, silence-bounded utterance per call.** If
 the app streams continuous raw audio and calls `/predict` on arbitrary fixed-size chunks as they
@@ -62,10 +67,13 @@ Quick connectivity/model-loaded check.
 ```json
 {
   "status": "ok",
-  "model_kind": "svm",
-  "speaker_held_out_accuracy": 0.050724637681159424
+  "model_kind": "random_forest",
+  "speaker_held_out_accuracy": 0.06521739130434782
 }
 ```
+(`model_kind` is picked automatically at training time — whichever of SVM/random-forest/KNN scores
+best on speaker-CV — so it can change between retrains. Don't hardcode logic around a specific
+value.)
 
 ## `POST /predict`
 
@@ -80,30 +88,30 @@ Quick connectivity/model-loaded check.
 **Response 200** (letter example)
 ```json
 {
-  "predicted_letter": { "id": "28_faa", "arabic": "ف", "score": 0.665, "category": "letter" },
+  "predicted_letter": { "id": "28_faa", "arabic": "ف", "score": 0.790, "category": "letter" },
   "top_candidates": [
-    { "id": "28_faa", "arabic": "ف", "score": 0.665, "category": "letter" },
-    { "id": "23_zay",  "arabic": "ز", "score": 0.243, "category": "letter" },
-    { "id": "10_qaaf", "arabic": "ق", "score": 0.033, "category": "letter" }
+    { "id": "28_faa", "arabic": "ف", "score": 0.790, "category": "letter" },
+    { "id": "10_qaaf", "arabic": "ق", "score": 0.047, "category": "letter" },
+    { "id": "09_ain",  "arabic": "ع", "score": 0.033, "category": "letter" }
   ],
-  "score_type": "relative_score",
-  "model_kind": "svm",
-  "speaker_held_out_accuracy": 0.050724637681159424
+  "score_type": "probability",
+  "model_kind": "random_forest",
+  "speaker_held_out_accuracy": 0.06521739130434782
 }
 ```
 
 **Response 200** (digit example — same shape, `category` is what tells them apart)
 ```json
 {
-  "predicted_letter": { "id": "5", "arabic": "٥", "score": 0.653, "category": "digit" },
+  "predicted_letter": { "id": "5", "arabic": "٥", "score": 0.973, "category": "digit" },
   "top_candidates": [
-    { "id": "5", "arabic": "٥", "score": 0.653, "category": "digit" },
-    { "id": "6", "arabic": "٦", "score": 0.239, "category": "digit" },
-    { "id": "3", "arabic": "٣", "score": 0.087, "category": "digit" }
+    { "id": "5", "arabic": "٥", "score": 0.973, "category": "digit" },
+    { "id": "6", "arabic": "٦", "score": 0.007, "category": "digit" },
+    { "id": "06_seen", "arabic": "س", "score": 0.003, "category": "letter" }
   ],
-  "score_type": "relative_score",
-  "model_kind": "svm",
-  "speaker_held_out_accuracy": 0.050724637681159424
+  "score_type": "probability",
+  "model_kind": "random_forest",
+  "speaker_held_out_accuracy": 0.06521739130434782
 }
 ```
 
@@ -206,7 +214,7 @@ final result = await predictLetter(
 
 print('Predicted (${result.predictedLetter.category}): ${result.predictedLetter.arabic} '
     '(${(result.predictedLetter.score * 100).toStringAsFixed(0)}%)');
-// Given current ~5.1% accuracy, show result.topCandidates rather than committing to one answer.
+// Given current ~6.5% accuracy, show result.topCandidates rather than committing to one answer.
 ```
 
 Notes:
