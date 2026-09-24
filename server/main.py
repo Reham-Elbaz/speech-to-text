@@ -44,6 +44,7 @@ async def lifespan(app: FastAPI):
     bundle = joblib.load(MODEL_PATH)
     model_bundle["pipeline"] = bundle["pipeline"]
     model_bundle["id_to_arabic"] = bundle["id_to_arabic"]
+    model_bundle["id_to_kind"] = bundle["id_to_kind"]
     model_bundle["sr"] = bundle["sr"]
     model_bundle["n_mfcc"] = bundle["n_mfcc"]
     model_bundle["model_kind"] = bundle["model_kind"]
@@ -73,6 +74,7 @@ class Candidate(BaseModel):
     id: str
     arabic: str
     score: float
+    category: str  # "letter" or "digit" — the model now chooses across both, not letters only
 
 
 class PredictResponse(BaseModel):
@@ -123,6 +125,7 @@ async def predict(audio: UploadFile = File(...), top: int = 3):
 
     pipeline = model_bundle["pipeline"]
     id_to_arabic = model_bundle["id_to_arabic"]
+    id_to_kind = model_bundle["id_to_kind"]
     classes = pipeline.classes_
 
     if hasattr(pipeline, "predict_proba"):
@@ -137,7 +140,8 @@ async def predict(audio: UploadFile = File(...), top: int = 3):
     top = max(1, min(top, len(classes)))
     order = np.argsort(scores)[::-1][:top]
     candidates = [
-        Candidate(id=classes[i], arabic=id_to_arabic.get(classes[i], "?"), score=float(scores[i]))
+        Candidate(id=classes[i], arabic=id_to_arabic.get(classes[i], "?"),
+                  score=float(scores[i]), category=id_to_kind.get(classes[i], "?"))
         for i in order
     ]
 

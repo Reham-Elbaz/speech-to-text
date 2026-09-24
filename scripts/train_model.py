@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
-"""Train an isolated Arabic letter classifier on data/processed/letters/.
+"""Train a unified isolated Arabic letter+digit classifier on data/processed/{letters,digits}/.
 
 Usage:
     .venv/bin/python3 scripts/train_model.py
+
+Letters and digits are trained as ONE 38-class problem, not two separate models. A plate
+character can be either, and a model that only ever saw letters has no way to say "this isn't a
+letter" — it just picks the closest-sounding one. Training them together lets the model actually
+choose between all 38 symbols and gives comparable scores across the whole set.
 
 Pipeline: load every labeled clip -> extract a fixed-length MFCC-based feature vector -> evaluate
 with two cross-validation schemes -> fit a final model on all data -> save it to models/.
@@ -39,20 +44,29 @@ MODELS = ROOT / "models"
 def load_dataset():
     with open(DATA / "labels.json", encoding="utf-8") as f:
         labels = json.load(f)
-    letters = labels["letters"]
-    id_to_arabic = {item["id"]: item["arabic"] for item in letters}
+
+    id_to_arabic, id_to_kind, class_dirs = {}, {}, []
+    for item in labels["letters"]:
+        id_to_arabic[item["id"]] = item["arabic"]
+        id_to_kind[item["id"]] = "letter"
+        class_dirs.append((item["id"], DATA / "processed" / "letters" / item["id"]))
+    for item in labels["digits"]:
+        id_to_arabic[item["id"]] = item["arabic"]
+        id_to_kind[item["id"]] = "digit"
+        class_dirs.append((item["id"], DATA / "processed" / "digits" / item["id"]))
 
     X, y, speaker_groups, take_groups = [], [], [], []
-    base = DATA / "processed" / "letters"
-    for letter_id in sorted(id_to_arabic):
-        for clip in sorted((base / letter_id).glob("*.wav")):
+    for class_id, folder in sorted(class_dirs):
+        if not folder.exists():
+            continue
+        for clip in sorted(folder.glob("*.wav")):
             speaker_id, take = clip.stem.split("_")[0], clip.stem.split("_")[1]
             X.append(extract_features(clip))
-            y.append(letter_id)
+            y.append(class_id)
             speaker_groups.append(speaker_id)
             take_groups.append(f"{speaker_id}_{take}")
 
-    return np.array(X), np.array(y), np.array(speaker_groups), np.array(take_groups), id_to_arabic
+    return np.array(X), np.array(y), np.array(speaker_groups), np.array(take_groups), id_to_arabic, id_to_kind
 
 
 def make_pipeline(kind: str):
@@ -85,7 +99,7 @@ def evaluate(X, y, groups, label):
 
 def main():
     print("Loading clips and extracting features...")
-    X, y, speaker_groups, take_groups, id_to_arabic = load_dataset()
+    X, y, speaker_groups, take_groups, id_to_arabic, id_to_kind = load_dataset()
     n_classes = len(set(y))
     print(f"{len(X)} clips, {n_classes} classes, feature dim = {X.shape[1]}")
     print(f"speakers: {sorted(set(speaker_groups))}, takes: {sorted(set(take_groups))}")
@@ -104,6 +118,7 @@ def main():
     joblib.dump({
         "pipeline": final_pipe,
         "id_to_arabic": id_to_arabic,
+        "id_to_kind": id_to_kind,
         "feature_fn": "mfcc13_mean_std + zcr_mean + centroid_mean",
         "sr": SR,
         "n_mfcc": N_MFCC,

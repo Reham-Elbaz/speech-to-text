@@ -22,12 +22,20 @@ validation (e.g. reusing whatever Laravel already issues on login) before then.
 
 ## Before you rely on this
 
-Current accuracy is **~6.6%** on a genuinely new speaker's voice (measured by leave-one-speaker-out
-cross-validation; chance level for 28 classes is ~3.6%). That number is returned in every response
+Current accuracy is **~5.1%** on a genuinely new speaker's voice (measured by leave-one-speaker-out
+cross-validation; chance level for 38 classes is ~2.6%). That number is returned in every response
 (`speaker_held_out_accuracy`) specifically so it's never silently forgotten in the UI. Design the
 UI around this: show multiple candidates rather than committing to one answer, and expect this
 number to improve as more speakers' recordings are added to training — no client-side change
 needed when it does, just re-poll `/health` or re-deploy.
+
+**Important — this only classifies a single, complete, silence-bounded utterance per call.** If
+the app streams continuous raw audio and calls `/predict` on arbitrary fixed-size chunks as they
+arrive, the input won't match anything the model was trained on (clean isolated letter/digit
+clips) regardless of accuracy improvements. Segmenting live audio into individual finished
+letters — either client-side (VAD, only call `/predict` once per detected pause) or via a future
+stateful streaming endpoint — is a separate, currently-unbuilt piece of work; see the "Intended
+UX" discussion. The dataset/model work here does not fix that on its own.
 
 ## Base URL
 
@@ -55,7 +63,7 @@ Quick connectivity/model-loaded check.
 {
   "status": "ok",
   "model_kind": "svm",
-  "speaker_held_out_accuracy": 0.0663265306122449
+  "speaker_held_out_accuracy": 0.050724637681159424
 }
 ```
 
@@ -66,32 +74,51 @@ Quick connectivity/model-loaded check.
 **Request**: `multipart/form-data`
 | field | type | required | notes |
 |---|---|---|---|
-| `audio` | file | yes | one recorded clip of a single spoken Arabic letter. Any common format (`.m4a`, `.wav`, `.ogg`, `.aac`) — the server normalizes it with ffmpeg, no client-side conversion needed. |
+| `audio` | file | yes | one recorded clip of a single spoken Arabic letter OR digit. Any common format (`.m4a`, `.wav`, `.ogg`, `.aac`) — the server normalizes it with ffmpeg, no client-side conversion needed. |
 | `top` | int | no | how many ranked candidates to return (default 3) |
 
-**Response 200**
+**Response 200** (letter example)
 ```json
 {
-  "predicted_letter": { "id": "28_faa", "arabic": "ف", "score": 0.643 },
+  "predicted_letter": { "id": "28_faa", "arabic": "ف", "score": 0.665, "category": "letter" },
   "top_candidates": [
-    { "id": "28_faa", "arabic": "ف", "score": 0.643 },
-    { "id": "23_zay",  "arabic": "ز", "score": 0.234 },
-    { "id": "10_qaaf", "arabic": "ق", "score": 0.086 }
+    { "id": "28_faa", "arabic": "ف", "score": 0.665, "category": "letter" },
+    { "id": "23_zay",  "arabic": "ز", "score": 0.243, "category": "letter" },
+    { "id": "10_qaaf", "arabic": "ق", "score": 0.033, "category": "letter" }
   ],
   "score_type": "relative_score",
   "model_kind": "svm",
-  "speaker_held_out_accuracy": 0.0663265306122449
+  "speaker_held_out_accuracy": 0.050724637681159424
+}
+```
+
+**Response 200** (digit example — same shape, `category` is what tells them apart)
+```json
+{
+  "predicted_letter": { "id": "5", "arabic": "٥", "score": 0.653, "category": "digit" },
+  "top_candidates": [
+    { "id": "5", "arabic": "٥", "score": 0.653, "category": "digit" },
+    { "id": "6", "arabic": "٦", "score": 0.239, "category": "digit" },
+    { "id": "3", "arabic": "٣", "score": 0.087, "category": "digit" }
+  ],
+  "score_type": "relative_score",
+  "model_kind": "svm",
+  "speaker_held_out_accuracy": 0.050724637681159424
 }
 ```
 
 - `id` is an internal identifier, stable across retrains — safe to use as a lookup key.
   `arabic` is the actual glyph to display.
+- `category` is `"letter"` or `"digit"` — the model chooses across both in one shot, not letters
+  only. Despite the field being named `predicted_letter` (kept as-is so the existing app
+  integration doesn't break), it can now hold a digit — always check `category`, don't assume.
 - `score_type` is either `"probability"` (calibrated, sums to ~1 meaningfully) or
   `"relative_score"` (softmax over the model's decision margins — ranks candidates correctly but
   is **not** a calibrated probability; don't display it as "64% sure", treat it as a ranking
   signal). Check this field rather than assuming — it depends on which model type is currently
   deployed.
-- Only the current 28-letter alphabet (see below) can be returned; nothing outside that set.
+- 38 possible classes total: the 28-letter alphabet + 10 digits (see below). Nothing outside
+  that set can be returned.
 
 **Response 400** — bad/undecodable audio
 ```json
@@ -110,10 +137,11 @@ class LetterPrediction {
   final String id;
   final String arabic;
   final double score;
-  LetterPrediction(this.id, this.arabic, this.score);
+  final String category; // "letter" or "digit"
+  LetterPrediction(this.id, this.arabic, this.score, this.category);
 
-  factory LetterPrediction.fromJson(Map<String, dynamic> json) =>
-      LetterPrediction(json['id'], json['arabic'], (json['score'] as num).toDouble());
+  factory LetterPrediction.fromJson(Map<String, dynamic> json) => LetterPrediction(
+      json['id'], json['arabic'], (json['score'] as num).toDouble(), json['category']);
 }
 
 class PredictResult {
@@ -176,9 +204,9 @@ final result = await predictLetter(
   audioFilePath: recordedFile.path,
 );
 
-print('Predicted: ${result.predictedLetter.arabic} '
+print('Predicted (${result.predictedLetter.category}): ${result.predictedLetter.arabic} '
     '(${(result.predictedLetter.score * 100).toStringAsFixed(0)}%)');
-// Given current ~6.6% accuracy, show result.topCandidates rather than committing to one answer.
+// Given current ~5.1% accuracy, show result.topCandidates rather than committing to one answer.
 ```
 
 Notes:
@@ -189,11 +217,12 @@ Notes:
 - Don't hardcode `baseUrl`/`apiKey` in committed source — load from a build config, `--dart-define`,
   or similar, especially once this moves off the temporary tunnel.
 
-## Letter set
+## Letter and digit set
 
-28 standard Arabic letters. 17 of them are flagged `plate_letter: true` in the underlying
-`data/labels.json` — the ones that actually occur on real license plates, if you need to restrict
-or prioritize UI around plate-reading specifically rather than general letter dictation.
+38 classes total, trained as one unified model: the 28 standard Arabic letters + digits 0-9.
+17 of the letters are flagged `plate_letter: true` in the underlying `data/labels.json` — the
+ones that actually occur on real license plates, if you need to restrict or prioritize UI around
+plate-reading specifically rather than general letter dictation. All 10 digits occur on plates.
 
 ## Deployment notes (for whoever hosts this)
 
